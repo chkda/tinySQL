@@ -181,12 +181,7 @@ func prepareInsert(inputBuffer *InputBuffer, statement *Statement) PrepareResult
 
 func prepareStatement(inputBuffer *InputBuffer, statement *Statement) PrepareResult {
 	if strings.HasPrefix(inputBuffer.buffer, "insert") {
-		statement.typ = STATEMENT_INSERT
-		_, err := fmt.Sscanf(inputBuffer.buffer, "insert %d %s %s", &statement.rowToInsert.id, &statement.rowToInsert.username, &statement.rowToInsert.email)
-		if err != nil {
-			return PREPARE_SYNTAX_ERROR
-		}
-		return PREPARE_SUCCESS
+		return prepareInsert(inputBuffer, statement)
 	}
 	if strings.HasPrefix(inputBuffer.buffer, "select") {
 		statement.typ = STATEMENT_SELECT
@@ -248,6 +243,12 @@ func main() {
 			continue
 		case PREPARE_UNRECOGNISED_COMMAND:
 			fmt.Printf("Unrecognised Command: %s\n", inputBuffer.buffer)
+			continue
+		case PREPARE_SYNTAX_TOO_LONG:
+			fmt.Printf("Syntax error. syntax too long\n")
+			continue
+		case PREPARE_NEGATIVE_ID:
+			fmt.Printf("Syntax error. illegal id\n")
 			continue
 		}
 
