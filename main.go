@@ -71,6 +71,12 @@ type Row struct {
 	email    string
 }
 
+type Cursor struct {
+	table      *Table
+	rowNum     uint32
+	endOfTable bool
+}
+
 type Pager struct {
 	fileDescriptor int
 	fileLength     uint32
@@ -200,12 +206,36 @@ func deserializeRow(destination *Row, source []byte) {
 	destination.email = string(source[EMAIL_OFFSET : EMAIL_OFFSET+EMAIL_SIZE])
 }
 
-func rowSlot(table *Table, rowNum uint32) []byte {
+func cursorValue(cursor *Cursor) []byte {
+	rowNum := cursor.rowNum
 	pageNum := rowNum / uint32(ROWS_PER_PAGE)
-	page := getPage(table.pager, pageNum)
+	page := getPage(cursor.table.pager, pageNum)
 	rowOffset := rowNum % uint32(ROWS_PER_PAGE)
 	byteOffset := rowOffset * uint32(ROW_SIZE)
 	return page[byteOffset:]
+}
+
+func cursorAdvance(cursor *Cursor) {
+	cursor.rowNum += 1
+	if cursor.rowNum >= cursor.table.numRows {
+		cursor.endOfTable = true
+	}
+}
+
+func tableStart(table *Table) *Cursor {
+	return &Cursor{
+		table:      table,
+		rowNum:     0,
+		endOfTable: table.numRows == 0,
+	}
+}
+
+func tableEnd(table *Table) *Cursor {
+	return &Cursor{
+		table:      table,
+		rowNum:     table.numRows,
+		endOfTable: true,
+	}
 }
 
 type InputBuffer struct {
@@ -294,16 +324,19 @@ func executeInsert(statement *Statement, table *Table) ExecuteResult {
 	if table.numRows >= uint32(TABLE_MAX_ROWS) {
 		return EXECUTE_TABLE_FULL
 	}
-	serializeRow(&statement.rowToInsert, rowSlot(table, table.numRows))
+	cursor := tableEnd(table)
+	serializeRow(&statement.rowToInsert, cursorValue(cursor))
 	table.numRows++
 	return EXECUTE_SUCCESS
 }
 
 func executeSelect(statement *Statement, table *Table) ExecuteResult {
+	cursor := tableStart(table)
 	var row Row
-	for i := uint32(0); i < table.numRows; i++ {
-		deserializeRow(&row, rowSlot(table, i))
+	for !cursor.endOfTable {
+		deserializeRow(&row, cursorValue(cursor))
 		fmt.Printf("(%d %s %s)\n", row.id, row.username, row.email)
+		cursorAdvance(cursor)
 	}
 	return EXECUTE_SUCCESS
 }
