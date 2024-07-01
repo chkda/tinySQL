@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -21,6 +22,8 @@ const (
 	PREPARE_SUCCESS PrepareResult = iota
 	PREPARE_UNRECOGNISED_COMMAND
 	PREPARE_SYNTAX_ERROR
+	PREPARE_NEGATIVE_ID
+	PREPARE_SYNTAX_TOO_LONG
 )
 
 type ExecuteResult int
@@ -140,6 +143,40 @@ func doMetaCommand(inputBuffer *InputBuffer) MetaCommandResult {
 		return META_COMMAND_SUCCESS
 	}
 	return META_UNRECOGNISED_COMMAND
+}
+
+func prepareInsert(inputBuffer *InputBuffer, statement *Statement) PrepareResult {
+	parts := strings.Fields(inputBuffer.buffer)
+	if len(parts) < 4 {
+		return PREPARE_SYNTAX_ERROR
+	}
+
+	if len(parts) > 4 {
+		return PREPARE_SYNTAX_TOO_LONG
+	}
+
+	id, err := strconv.Atoi(parts[1])
+	if err != nil || id < 0 {
+		return PREPARE_NEGATIVE_ID
+	}
+
+	username := parts[2]
+	email := parts[3]
+
+	if len(username) > COLUMN_USERNAME_SIZE {
+		return PREPARE_SYNTAX_TOO_LONG
+	}
+
+	if len(email) > COLUMN_EMAIL_SIZE {
+		return PREPARE_SYNTAX_TOO_LONG
+	}
+
+	statement.typ = STATEMENT_INSERT
+	statement.rowToInsert.id = uint32(id)
+	statement.rowToInsert.username = username
+	statement.rowToInsert.email = email
+
+	return PREPARE_SUCCESS
 }
 
 func prepareStatement(inputBuffer *InputBuffer, statement *Statement) PrepareResult {
