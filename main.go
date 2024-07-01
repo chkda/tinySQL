@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 type MetaCommandResult int
@@ -70,20 +71,122 @@ type Row struct {
 	email    string
 }
 
-type Table struct {
-	numRows uint32
-	pages   [TABLE_MAX_PAGES][]byte
+type Pager struct {
+	fileDescriptor int
+	fileLength     uint32
+	pages          [TABLE_MAX_PAGES][]byte
 }
 
-func newTable() *Table {
-	return &Table{}
-}
-
-func freeTable(table *Table) {
-	for i := range table.pages {
-		table.pages[i] = nil
+func pagerOpen(filename string) *Pager {
+	fd, err := syscall.Open(filename, syscall.O_RDWR|syscall.O_CREAT, 0600)
+	if err != nil {
+		fmt.Printf("Uanble to open file: %s\n", filename)
+		os.Exit(1)
+	}
+	fileInfo := &syscall.Stat_t{}
+	err = syscall.Stat(filename, fileInfo)
+	if err != nil {
+		fmt.Println(err)
+		fmt.Printf("Unable to get file info: %s\n", filename)
+		os.Exit(1)
+	}
+	fileLength := uint32(fileInfo.Size)
+	return &Pager{
+		fileDescriptor: fd,
+		fileLength:     fileLength,
 	}
 }
+
+func getPage(pager *Pager, pageNum uint32) []byte {
+	if pageNum > TABLE_MAX_PAGES {
+		fmt.Printf("Page number out of bounds:%d\n", pageNum)
+		os.Exit(1)
+	}
+
+	if pager.pages[pageNum] == nil {
+		page := make([]byte, PAGE_SIZE)
+		numPages := pager.fileLength / PAGE_SIZE
+
+		if pager.fileLength%PAGE_SIZE != 0 {
+			numPages += 1
+		}
+
+		if pageNum <= numPages {
+			offset := int64(pageNum * PAGE_SIZE)
+			_, err := syscall.Pread(pager.fileDescriptor, page, offset)
+			if err != nil {
+				fmt.Printf("Error reading file: %s\n", err)
+				os.Exit(1)
+			}
+		}
+
+		pager.pages[pageNum] = page
+	}
+	return pager.pages[pageNum]
+}
+
+func pagerFlush(pager *Pager, pageNum uint32, size uint32) {
+	if pager.pages[pageNum] == nil {
+		fmt.Println("Tried to flush null page")
+		os.Exit(1)
+	}
+
+	offset := int64(pageNum * PAGE_SIZE)
+	_, err := syscall.Pwrite(pager.fileDescriptor, pager.pages[pageNum][:size], offset)
+	if err != nil {
+		fmt.Printf("Error writing: %s\n", err)
+		os.Exit(1)
+	}
+}
+
+func dbClose(table *Table) {
+	pager := table.pager
+	numFullPages := table.numRows / uint32(ROWS_PER_PAGE)
+
+	for i := uint32(0); i < numFullPages; i++ {
+		if pager.pages[i] == nil {
+			continue
+		}
+		pagerFlush(pager, i, PAGE_SIZE)
+		pager.pages[i] = nil
+	}
+
+	numAdditionalRows := table.numRows % uint32(ROWS_PER_PAGE)
+	if numAdditionalRows > 0 {
+		pageNum := numFullPages
+		if pager.pages[pageNum] != nil {
+			pagerFlush(pager, pageNum, numAdditionalRows*uint32(ROW_SIZE))
+			pager.pages[pageNum] = nil
+		}
+	}
+
+	syscall.Close(pager.fileDescriptor)
+	for i := uint32(0); i < TABLE_MAX_PAGES; i++ {
+		if pager.pages[i] != nil {
+			pager.pages[i] = nil
+		}
+	}
+}
+
+func dbOpen(filename string) *Table {
+	pager := pagerOpen(filename)
+	numRows := pager.fileLength / uint32(ROW_SIZE)
+
+	table := &Table{
+		pager:   pager,
+		numRows: numRows,
+	}
+	return table
+}
+
+type Table struct {
+	numRows uint32
+	pager   *Pager
+}
+
+// func newTable() *Table {
+// 	return &Table{}
+// }
 
 func serializeRow(source *Row, destination []byte) {
 	binary.LittleEndian.PutUint32(destination[ID_OFFSET:], source.id)
@@ -99,11 +202,7 @@ func deserializeRow(destination *Row, source []byte) {
 
 func rowSlot(table *Table, rowNum uint32) []byte {
 	pageNum := rowNum / uint32(ROWS_PER_PAGE)
-	page := table.pages[pageNum]
-	if page == nil {
-		page = make([]byte, PAGE_SIZE)
-		table.pages[pageNum] = page
-	}
+	page := getPage(table.pager, pageNum)
 	rowOffset := rowNum % uint32(ROWS_PER_PAGE)
 	byteOffset := rowOffset * uint32(ROW_SIZE)
 	return page[byteOffset:]
@@ -137,8 +236,9 @@ func readInput(inputBuffer *InputBuffer) {
 	inputBuffer.buffer = buffer
 }
 
-func doMetaCommand(inputBuffer *InputBuffer) MetaCommandResult {
+func doMetaCommand(inputBuffer *InputBuffer, table *Table) MetaCommandResult {
 	if inputBuffer.buffer == ".exit" {
+		dbClose(table)
 		os.Exit(0)
 		return META_COMMAND_SUCCESS
 	}
@@ -219,13 +319,18 @@ func executeStatement(statement *Statement, table *Table) ExecuteResult {
 }
 
 func main() {
-	table := newTable()
+	if len(os.Args) < 2 {
+		fmt.Println("Must supply a database file name")
+		os.Exit(1)
+	}
+	filename := os.Args[1]
+	table := dbOpen(filename)
 	inputBuffer := newInputBuffer()
 	for {
 		printPrompt()
 		readInput(inputBuffer)
 		if strings.HasPrefix(inputBuffer.buffer, ".") {
-			switch doMetaCommand(inputBuffer) {
+			switch doMetaCommand(inputBuffer, table) {
 			case META_COMMAND_SUCCESS:
 				continue
 			case META_UNRECOGNISED_COMMAND:
