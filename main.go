@@ -522,12 +522,41 @@ func tableStart(table *Table) *Cursor {
 }
 
 func tableFind(table *Table, key uint32) *Cursor {
-	rootNode := getPage(table.pager, table.rootPageNum)
+	rootPageNum := table.rootPageNum
+	rootNode := getPage(table.pager, rootPageNum)
 	if getNodeType(rootNode) == NODE_LEAF {
-		return leafNodeFind(table, table.rootPageNum, key)
+		return leafNodeFind(table, rootPageNum, key)
 	} else {
-		fmt.Println("Need to implement searching internal node")
-		os.Exit(1)
+		return internalNodeFind(table, key, rootPageNum)
+	}
+	return nil
+}
+
+func internalNodeFind(table *Table, key uint32, pageNum uint32) *Cursor {
+	node := getPage(table.pager, pageNum)
+	numKeys := *internalNodeNumKeys(node)
+
+	minIndex := uint32(0)
+	maxIndex := numKeys
+
+	for minIndex != maxIndex {
+		index := (minIndex + maxIndex) / 2
+		keyToRight := *internalNodeKey(node, index)
+		if keyToRight >= key {
+			maxIndex = index
+		} else {
+			minIndex = index + 1
+		}
+	}
+
+	childNum := *internalNodeChild(node, minIndex)
+	child := getPage(table.pager, childNum)
+
+	switch getNodeType(child) {
+	case NODE_INTERNAL:
+		return internalNodeFind(table, key, childNum)
+	case NODE_LEAF:
+		return leafNodeFind(table, childNum, key)
 	}
 	return nil
 }
@@ -625,6 +654,7 @@ func leafNodeInsert(cursor *Cursor, key uint32, value *Row) {
 	numCells := *leafNodeNumcells(node)
 	if numCells >= uint32(LEAF_NODE_MAX_CELLS) {
 		leafNodeSplitAndInsert(cursor, key, value)
+		return
 	}
 
 	if cursor.cellNum < numCells {
@@ -640,9 +670,7 @@ func leafNodeInsert(cursor *Cursor, key uint32, value *Row) {
 func executeInsert(statement *Statement, table *Table) ExecuteResult {
 	node := getPage(table.pager, table.rootPageNum)
 	numCells := *leafNodeNumcells(node)
-	if numCells >= uint32(LEAF_NODE_MAX_CELLS) {
-		return EXECUTE_TABLE_FULL
-	}
+
 	rowToInsert := &statement.rowToInsert
 	keyToInsert := rowToInsert.id
 	cursor := tableFind(table, keyToInsert)
