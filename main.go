@@ -106,6 +106,8 @@ const (
 	COMMON_NODE_HEADER_SIZE    = NODE_TYPE_SIZE + IS_ROOT_SIZE + PARENT_POINTER_SIZE
 	LEAF_NODE_NUM_CELLS_SIZE   = 4
 	LEAF_NODE_NUM_CELLS_OFFSET = COMMON_NODE_HEADER_SIZE
+	LEAF_NODE_NEXT_LEAF_SIZE   = 4
+	LEAF_NODE_NEXT_LEAF_OFFSET = LEAF_NODE_NUM_CELLS_OFFSET + LEAF_NODE_NEXT_LEAF_SIZE
 	LEAF_NODE_HEADER_SIZE      = COMMON_NODE_HEADER_SIZE + LEAF_NODE_NUM_CELLS_SIZE
 	LEAF_NODE_KEY_SIZE         = 4
 	LEAF_NODE_KEY_OFFSET       = 0
@@ -170,6 +172,8 @@ func leafNodeSplitAndInsert(cursor *Cursor, key uint32, value *Row) {
 	newPageNum := getUnusedPageNum(cursor.table.pager)
 	newNode := getPage(cursor.table.pager, newPageNum)
 	initializeLeafNode(newNode)
+	*leafNodeNextLeaf(newNode) = *leafNodeNextLeaf(oldNode)
+	*leafNodeNextLeaf(oldNode) = newPageNum
 
 	for i := int32(LEAF_NODE_MAX_CELLS); i >= 0; i-- {
 		var destinationNode []byte
@@ -183,7 +187,8 @@ func leafNodeSplitAndInsert(cursor *Cursor, key uint32, value *Row) {
 		destination := leafNodeCell(destinationNode, uint32(indexWithNode))
 
 		if i == int32(cursor.cellNum) {
-			serializeRow(value, destination)
+			serializeRow(value, leafNodeValue(destinationNode, uint32(indexWithNode)))
+			*leafNodeKey(destinationNode, uint32(indexWithNode)) = key
 		} else if i > int32(cursor.cellNum) {
 			copy(destination, leafNodeCell(oldNode, uint32(i-1)))
 		} else {
@@ -200,6 +205,10 @@ func leafNodeSplitAndInsert(cursor *Cursor, key uint32, value *Row) {
 		fmt.Println("TODO: Update parent adter split")
 		os.Exit(1)
 	}
+}
+
+func leafNodeNextLeaf(node []byte) *uint32 {
+	return (*uint32)(unsafe.Pointer(&node[LEAF_NODE_NEXT_LEAF_OFFSET]))
 }
 
 func printConstant() {
@@ -257,7 +266,9 @@ func printTree(pager *Pager, pageNum uint32, indentationLevel uint32) {
 
 func initializeLeafNode(node []byte) {
 	setNodeType(node, NODE_LEAF)
+	setNodeRoot(node, false)
 	*leafNodeNumcells(node) = 0
+	*leafNodeNextLeaf(node) = 0
 }
 
 const (
@@ -505,18 +516,21 @@ func cursorAdvance(cursor *Cursor) {
 	node := getPage(cursor.table.pager, cursor.pageNum)
 	cursor.cellNum++
 	if cursor.cellNum >= *leafNodeNumcells(node) {
-		cursor.endOfTable = true
+		nextPageNum := *leafNodeNextLeaf(node)
+		if nextPageNum == 0 {
+			cursor.endOfTable = true
+		} else {
+			cursor.pageNum = nextPageNum
+			cursor.cellNum = 0
+		}
+
 	}
 }
 
 func tableStart(table *Table) *Cursor {
-	cursor := &Cursor{
-		table:   table,
-		pageNum: table.rootPageNum,
-		cellNum: 0,
-	}
-	rootNode := getPage(table.pager, table.rootPageNum)
-	numCells := *leafNodeNumcells(rootNode)
+	cursor := tableFind(table, 0)
+	node := getPage(cursor.table.pager, cursor.pageNum)
+	numCells := *leafNodeNumcells(node)
 	cursor.endOfTable = (numCells == 0)
 	return cursor
 }
