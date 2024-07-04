@@ -169,6 +169,7 @@ func leafNodeFind(table *Table, pageNum uint32, key uint32) *Cursor {
 
 func leafNodeSplitAndInsert(cursor *Cursor, key uint32, value *Row) {
 	oldNode := getPage(cursor.table.pager, cursor.pageNum)
+	oldMax := getNodeMaxKey(oldNode)
 	newPageNum := getUnusedPageNum(cursor.table.pager)
 	newNode := getPage(cursor.table.pager, newPageNum)
 	initializeLeafNode(newNode)
@@ -202,8 +203,12 @@ func leafNodeSplitAndInsert(cursor *Cursor, key uint32, value *Row) {
 	if isNodeRoot(oldNode) {
 		createNewRoot(cursor.table, newPageNum)
 	} else {
-		fmt.Println("TODO: Update parent adter split")
-		os.Exit(1)
+		parentPageNum := *nodeParent(oldNode)
+		newMax := getNodeMaxKey(oldNode)
+		parent := getPage(cursor.table.pager, parentPageNum)
+		updateInternalNodeKey(parent, oldMax, newMax)
+		internalNodeInsert(cursor.table, parentPageNum, newPageNum)
+		return
 	}
 }
 
@@ -280,6 +285,7 @@ const (
 	INTERNAL_NODE_KEY_SIZE           = 4
 	INTERNAL_NODE_CHILD_SIZE         = 4
 	INTERNAL_NODE_CELL_SIZE          = INTERNAL_NODE_CHILD_SIZE + INTERNAL_NODE_KEY_SIZE
+	INTERNAL_NODE_MAX_CELLS          = 3
 )
 
 func internalNodeNumKeys(node []byte) *uint32 {
@@ -309,7 +315,61 @@ func internalNodeChild(node []byte, childNum uint32) *uint32 {
 }
 
 func internalNodeKey(node []byte, keyNum uint32) *uint32 {
-	return (*uint32)(unsafe.Pointer(&internalNodeCellI(node, keyNum)[INTERNAL_NODE_CHILD_SIZE]))
+	return (*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(&internalNodeCellI(node, keyNum)[0])) + INTERNAL_NODE_CHILD_SIZE))
+}
+
+func internalNodeInsert(table *Table, parentPageNum uint32, childPageNum uint32) {
+	parent := getPage(table.pager, parentPageNum)
+	child := getPage(table.pager, childPageNum)
+
+	childMaxKey := getNodeMaxKey(child)
+	index := internalNodeFindChild(parent, childMaxKey)
+
+	originalNumKeys := *internalNodeNumKeys(parent)
+	*internalNodeNumKeys(parent) = originalNumKeys + 1
+
+	if originalNumKeys >= INTERNAL_NODE_MAX_CELLS {
+		fmt.Println("TODO: Need to implement splitting internal node")
+		os.Exit(1)
+	}
+
+	rightChildPageNum := *internalNodeRightChild(parent)
+	rightChild := getPage(table.pager, rightChildPageNum)
+
+	if childMaxKey > getNodeMaxKey(rightChild) {
+		*internalNodeChild(parent, originalNumKeys) = rightChildPageNum
+		*internalNodeKey(parent, originalNumKeys) = getNodeMaxKey(rightChild)
+		*internalNodeRightChild(parent) = childPageNum
+	} else {
+		for i := originalNumKeys; i > index; i-- {
+			destination := internalNodeCellI(parent, i)
+			source := internalNodeCellI(parent, i-1)
+			copy(destination, source)
+		}
+		*internalNodeChild(parent, index) = childPageNum
+		*internalNodeKey(parent, index) = childMaxKey
+	}
+}
+
+func nodeParent(node []byte) *uint32 {
+	return (*uint32)(unsafe.Pointer(&node[PARENT_POINTER_OFFSET]))
+}
+
+func internalNodeFindChild(node []byte, key uint32) uint32 {
+	numKeys := *internalNodeNumKeys(node)
+	minIndex := uint32(0)
+	maxIndex := numKeys
+
+	for minIndex != maxIndex {
+		index := (minIndex + maxIndex) / 2
+		keyToRight := *internalNodeKey(node, index)
+		if keyToRight >= key {
+			maxIndex = index
+		} else {
+			minIndex = index + 1
+		}
+	}
+	return minIndex
 }
 
 func getNodeMaxKey(node []byte) uint32 {
@@ -342,6 +402,11 @@ func initializeInternalNode(node []byte) {
 	setNodeType(node, NODE_INTERNAL)
 	setNodeRoot(node, false)
 	*internalNodeNumKeys(node) = 0
+}
+
+func updateInternalNodeKey(node []byte, oldKey uint32, newKey uint32) {
+	oldChildIndex := internalNodeFindChild(node, oldKey)
+	*internalNodeKey(node, oldChildIndex) = newKey
 }
 
 func createNewRoot(table *Table, rightChildPageNum uint32) {
